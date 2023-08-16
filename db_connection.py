@@ -2,9 +2,9 @@ import pymysql
 
 import sql_queries as queries
 import utils
+from config import config
 from routers.custom_http_exceptions import exceptions
 from schemas import UserAllData
-from config import config
 
 logger = utils.initiate_logger(__name__)
 db_config = config["db"]

@@ -6,6 +6,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, Cookie
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer, SecurityScopes
 from jose import jwt, JWTError, ExpiredSignatureError
+from passlib.context import CryptContext
+from pydantic import error_wrappers
 
 import utils
 from config import config
@@ -13,18 +15,19 @@ from db_connection import RDBConnection
 from routers.custom_http_exceptions import exceptions
 from schemas import AccessTokenData, RefreshTokenData, UserAllData
 
-router = APIRouter(prefix="/token", tags=["token"])
-mysql_connector = RDBConnection()
-logger = utils.initiate_logger(__name__)
-
 server_conf = config["server"]
 token_conf = config["jwt"]
 
+router = APIRouter(prefix="/token", tags=["token"])
+mysql_connector = RDBConnection()
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = utils.initiate_logger(__name__)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token",
                                      scopes=token_conf["scopes"])
 
 
-class TokenConstructor:
+class JWTConstructor:
     _algorithm = token_conf["algorithm"]
     _secret_key = token_conf["secret_key"]
 
@@ -73,7 +76,7 @@ class TokenConstructor:
         return issued_at_date
 
 
-class TokenDecoder:
+class JWTDecoder:
     _algorithm = token_conf["algorithm"]
     _secret_key = token_conf["secret_key"]
 
@@ -95,69 +98,63 @@ class TokenDecoder:
             raise exceptions["credentials_exception"]
 
 
-class TokenValidator:
-    def __init__(self, token):
-        self.token = token
-
-    def validate_claims(self):
-        token_claims = self.token.values()
-        if None in token_claims:
-            logger.error(msg="Invalid token field(s) is(are) present.")
-            raise exceptions["credentials_exception"]
-        return True
-
-    def validate_scopes(self, oauth_security_scopes):
-        predefined_scopes = self.token.get("scopes", [])
-        for scope in predefined_scopes:
-            if scope not in oauth_security_scopes:
-                logger.error(msg=f"User {self.token['sub']} has {predefined_scopes} permissions, "
-                                 f"user needs these permissions: {oauth_security_scopes}")
-                raise exceptions["scopes_exception"]
-        return predefined_scopes
-
-
 async def retrieve_access_token_data(security_scopes: SecurityScopes,
                                      access_token: str = Cookie()) -> AccessTokenData:
-    access_token = TokenDecoder(encoded_token=access_token).decode()
-    token_validator = TokenValidator(access_token)
-    valid_claims = token_validator.validate_claims()
-    valid_scopes = token_validator.validate_scopes(oauth_security_scopes=security_scopes.scopes)
-    if valid_claims and valid_scopes:
+    access_token = JWTDecoder(encoded_token=access_token).decode()
+    try:
         access_token_data = AccessTokenData(token_id=access_token.get("jti"),
                                             user_id=access_token.get("aud"),
-                                            alias=access_token.get("sub"),
+                                            username=access_token.get("sub"),
+                                            expiry=access_token.get("exp"),
+                                            timestamp=access_token.get("iat"),
                                             scopes=access_token.get("scopes"))
+        verify_permissions(token_data=access_token_data, granted_scopes=security_scopes.scopes)
         return access_token_data
+    except error_wrappers.ValidationError as error:
+        logger.error(msg=f"Invalid field is present: \n {error}")
+        raise exceptions["credentials_exception"]
 
 
 async def retrieve_refresh_token_data(refresh_token: str = Cookie()) -> RefreshTokenData:
-    refresh_token = TokenDecoder(encoded_token=refresh_token).decode()
-    token_validator = TokenValidator(refresh_token)
-    valid_claims = token_validator.validate_claims()
-    if valid_claims:
+    refresh_token = JWTDecoder(encoded_token=refresh_token).decode()
+    try:
         refresh_token_data = RefreshTokenData(token_id=refresh_token.get("jti"),
                                               user_id=refresh_token.get("aud"),
-                                              alias=refresh_token.get("sub"),
+                                              username=refresh_token.get("sub"),
                                               expiry=refresh_token.get("exp"))
         return refresh_token_data
+    except error_wrappers.ValidationError as error:
+        logger.error(msg=f"Invalid field is present: \n {error}")
+        raise exceptions["credentials_exception"]
 
 
-def get_tokens_expiry(refresh_token_data: RefreshTokenData):
+def get_tokens_remaining_expiry(refresh_token_data: RefreshTokenData):
     access_token_expiry = token_conf["access_token_expiry_seconds"]
+    refresh_token_expiry_epoch = float(refresh_token_data.expiry)
     current_time_epoch = time.time()
-    refresh_token_expiry = int(float(refresh_token_data.expiry) - current_time_epoch)
+
+    refresh_token_expiry = int(refresh_token_expiry_epoch - current_time_epoch)
     if refresh_token_expiry < access_token_expiry:
-        logger.info(msg=f"Last usage of refresh token {refresh_token_data.token_id} for {refresh_token_data.alias}")
+        logger.info(msg=f"Last token pair rotation. "
+                        f"User: {refresh_token_data.username}; Token family: {refresh_token_data.token_id}")
         access_token_expiry = refresh_token_expiry
         return access_token_expiry, refresh_token_expiry
     return access_token_expiry, refresh_token_expiry
 
 
-def verify_user_password(alias, typed_password, saved_password):
-    password_validity = utils.compare_passwords(typed_password,
-                                                saved_password)
-    if not password_validity:
-        logger.error(msg=f"User {alias} provided wrong password")
+def verify_permissions(token_data, granted_scopes):
+    for scope in token_data.scopes:
+        if scope not in granted_scopes:
+            logger.error(msg=f"User {token_data.username} has {token_data.scopes} permissions, "
+                             f"user needs these permissions: {granted_scopes}")
+            raise exceptions["scopes_exception"]
+    return True
+
+
+def compare_passwords(username, plain_password: str, hashed_password: str) -> bool:
+    passwords_match = pwd_context.verify(plain_password, hashed_password)
+    if not passwords_match:
+        logger.error(msg=f"User {username} provided wrong password")
         raise exceptions["login_exception"]
     return True
 
@@ -165,7 +162,7 @@ def verify_user_password(alias, typed_password, saved_password):
 def create_token_pair(user_data,
                       access_token_expiry=token_conf["access_token_expiry_seconds"],
                       refresh_token_expiry=token_conf["refresh_token_expiry_seconds"]):
-    token_constructor = TokenConstructor(user_data)
+    token_constructor = JWTConstructor(user_data)
     # jti = token_constructor.jwt_id
     access_token = token_constructor.construct_access_token(access_token_expiry)
     refresh_token = token_constructor.construct_refresh_token(refresh_token_expiry)
@@ -174,13 +171,13 @@ def create_token_pair(user_data,
 
 @router.post("")
 async def login_for_access(response: Response,
-                           form_urlencoded_data: Annotated[OAuth2PasswordRequestForm, Depends()]) -> dict:
+                           form_urlencoded_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
     logger.info(msg=f"User {form_urlencoded_data.username} requested a token pair creation")
     alias = form_urlencoded_data.username
     password = form_urlencoded_data.password
 
     user_data = mysql_connector.get_user_details(alias)
-    verify_user_password(alias, password, user_data.hashed_password)
+    compare_passwords(user_data.username, password, user_data.hashed_password)
 
     access_token, refresh_token = create_token_pair(user_data)
     response.set_cookie(key="access_token", value=f"{access_token}",
@@ -188,17 +185,19 @@ async def login_for_access(response: Response,
     response.set_cookie(key="refresh_token", value=f"{refresh_token}",
                         httponly=True, secure=False, path="/token/refresh")
 
-    logger.info(msg=f"Token pair for {alias} was created successfully")
-    return {"message": "Token pair was created successfully!"}
+    logger.info(msg=f"Token pair for {user_data.username} was created successfully")
+    return {"username": f"{user_data.username}",
+            "message": "Token pair was created successfully.",
+            "timestamp": f"{datetime.now()}"}
 
 
 @router.post("/refresh")
 async def refresh_token_pair(response: Response,
                              refresh_token_data: Annotated[RefreshTokenData, Depends(retrieve_refresh_token_data)]):
-    logger.info(msg=f"User {refresh_token_data.alias} requested a token pair refresh")
+    logger.info(msg=f"User {refresh_token_data.username} requested a token pair refresh")
 
-    user_data = mysql_connector.get_user_details(alias=refresh_token_data.alias)
-    access_token_expiry, refresh_token_expiry = get_tokens_expiry(refresh_token_data)
+    user_data = mysql_connector.get_user_details(alias=refresh_token_data.username)
+    access_token_expiry, refresh_token_expiry = get_tokens_remaining_expiry(refresh_token_data)
 
     access_token, refresh_token = create_token_pair(user_data, access_token_expiry, refresh_token_expiry)
     response.set_cookie(key="access_token", value=f"{access_token}",
@@ -206,5 +205,7 @@ async def refresh_token_pair(response: Response,
     response.set_cookie(key="refresh_token", value=f"{refresh_token}",
                         httponly=True, secure=False, path="/token/refresh")
 
-    logger.info(msg=f"Token pair for {refresh_token_data.alias} was refreshed successfully")
-    return {"message": "Token pair was refreshed successfully!"}
+    logger.info(msg=f"Token pair for {refresh_token_data.username} was refreshed successfully")
+    return {"username": f"{user_data.username}",
+            "message": "Token pair was refreshed successfully.",
+            "timestamp": f"{datetime.now()}"}

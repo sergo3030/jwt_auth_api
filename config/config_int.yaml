@@ -1,0 +1,20 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "info"
+jwt:
+  secret_key: "DE9981D90D3F0923F06F5C69B2273CA83BEFB95271DA134DF1C64A58AE766B42"
+  algorithm: "HS256"
+  token_expire_minutes: 10
+  scopes:
+    view: "Permitted to read info"
+    edit: "Privileged to edit info"
+    admin: "Super User"
+db:
+  server: "db4free.net"
+  user: "fiverr_admin"
+  password: "Password4Demo"
+  database: "fiverr_users"
+  table: "users_dev"
+logs:
+  level: "INFO"

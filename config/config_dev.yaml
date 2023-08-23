@@ -11,6 +11,8 @@ jwt:
     view: "Permitted to read info"
     edit: "Privileged to edit info"
     admin: "Super User"
+csrf:
+  secret_key: "F62858DCE32A4652A7CB32DDB1C422B00520D539A76D8E1F53E81FD351F21842"
 db:
   server: "db4free.net"
   user: "fiverr_admin"

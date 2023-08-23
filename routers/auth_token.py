@@ -1,5 +1,7 @@
+import hashlib
+import hmac
+import secrets
 import time
-import uuid
 from datetime import datetime, timedelta
 from typing import Annotated
 
@@ -16,28 +18,31 @@ from routers.custom_http_exceptions import exceptions
 from schemas import AccessTokenData, RefreshTokenData, UserAllData
 
 server_conf = config["server"]
-token_conf = config["jwt"]
+jwt_conf = config["jwt"]
+csrf_conf = config["csrf"]
 
 router = APIRouter(prefix="/token", tags=["token"])
 mysql_connector = RDBConnection()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = utils.initiate_logger(__name__)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token",
-                                     scopes=token_conf["scopes"])
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token/create",
+                                     scopes=jwt_conf["scopes"])
 
 
 class JWTConstructor:
-    _algorithm = token_conf["algorithm"]
-    _secret_key = token_conf["secret_key"]
+    _algorithm = jwt_conf["algorithm"]
+    __secret_key = jwt_conf["secret_key"]
 
-    def __init__(self, user_data):
+    def __init__(self, session_id, user_data):
+        self.jwt_id = secrets.token_hex(16)
+        self.session_id = session_id
         self.user_data: UserAllData = user_data
-        self.jwt_id = str(uuid.uuid4())
 
     def construct_access_token(self, access_token_expiry):
         access_token_claims = {
             "jti": self.jwt_id,
+            "sid": self.session_id,
             "aud": self.user_data.id,
             "sub": self.user_data.username,
             "scopes": [self.user_data.permissions],
@@ -46,20 +51,21 @@ class JWTConstructor:
                                          expiry_time=access_token_expiry)
         }
         access_token = jwt.encode(claims=access_token_claims,
-                                  key=self._secret_key,
+                                  key=self.__secret_key,
                                   algorithm=self._algorithm)
         return access_token
 
     def construct_refresh_token(self, refresh_token_expiry):
         refresh_token_claims = {
             "jti": self.jwt_id,
+            "sid": self.session_id,
             "aud": self.user_data.id,
             "sub": self.user_data.username,
             "exp": self._set_expiry_date(token_type="Refresh",
                                          expiry_time=refresh_token_expiry)
         }
         refresh_token = jwt.encode(claims=refresh_token_claims,
-                                   key=self._secret_key,
+                                   key=self.__secret_key,
                                    algorithm=self._algorithm)
         return refresh_token
 
@@ -76,33 +82,46 @@ class JWTConstructor:
         return issued_at_date
 
 
-class JWTDecoder:
-    _algorithm = token_conf["algorithm"]
-    _secret_key = token_conf["secret_key"]
+def construct_csrf_token(jwt_id):
+    csrf_token_id = secrets.token_hex(16)
+    plain_payload = f"{jwt_id}!{csrf_token_id}"
+    hashed_payload = get_hashed_value(plain_payload, secret_key=csrf_conf["secret_key"])
+    csrf_token = f"{hashed_payload}.{plain_payload}"
+    return csrf_token
 
-    def __init__(self, encoded_token):
-        self.encoded_token = encoded_token
 
-    def decode(self):
-        try:
-            decoded_token = jwt.decode(token=self.encoded_token,
-                                       key=self._secret_key,
-                                       algorithms=self._algorithm,
-                                       options={"verify_aud": False})
-            return decoded_token
-        except ExpiredSignatureError:
-            logger.error(msg=f"Token expiry date exceeded")
-            raise exceptions["expired_signature"]
-        except JWTError as error:
-            logger.error(msg=f"Error occurred while validating token. {error}")
-            raise exceptions["credentials_exception"]
+async def validate_csrf_token(csrf_token: str = Cookie()):
+    split_token = csrf_token.split(".")
+    hashed_payload = split_token[0]
+    plain_payload = split_token[1]
+    hashed_unverified_payload = get_hashed_value(plain_payload, secret_key=csrf_conf["secret_key"])
+    signature_match = hmac.compare_digest(hashed_payload, hashed_unverified_payload)
+    if not signature_match:
+        logger.error(msg=f"CSRF token signature validation result: FAILED")
+        raise exceptions["csrf_token"]
+
+
+def decode_token(encoded_token):
+    try:
+        decoded_token = jwt.decode(token=encoded_token,
+                                   key=jwt_conf["secret_key"],
+                                   algorithms=jwt_conf["algorithm"],
+                                   options={"verify_aud": False})
+        return decoded_token
+    except ExpiredSignatureError:
+        logger.error(msg=f"Token expiry date exceeded")
+        raise exceptions["expired_signature"]
+    except JWTError as error:
+        logger.error(msg=f"Error occurred while validating token. {error}")
+        raise exceptions["credentials_exception"]
 
 
 async def retrieve_access_token_data(security_scopes: SecurityScopes,
                                      access_token: str = Cookie()) -> AccessTokenData:
-    access_token = JWTDecoder(encoded_token=access_token).decode()
+    access_token = decode_token(encoded_token=access_token)
     try:
         access_token_data = AccessTokenData(token_id=access_token.get("jti"),
+                                            session_id=access_token.get("sid"),
                                             user_id=access_token.get("aud"),
                                             username=access_token.get("sub"),
                                             expiry=access_token.get("exp"),
@@ -116,9 +135,10 @@ async def retrieve_access_token_data(security_scopes: SecurityScopes,
 
 
 async def retrieve_refresh_token_data(refresh_token: str = Cookie()) -> RefreshTokenData:
-    refresh_token = JWTDecoder(encoded_token=refresh_token).decode()
+    refresh_token = decode_token(encoded_token=refresh_token)
     try:
         refresh_token_data = RefreshTokenData(token_id=refresh_token.get("jti"),
+                                              session_id=refresh_token.get("sid"),
                                               user_id=refresh_token.get("aud"),
                                               username=refresh_token.get("sub"),
                                               expiry=refresh_token.get("exp"))
@@ -128,18 +148,16 @@ async def retrieve_refresh_token_data(refresh_token: str = Cookie()) -> RefreshT
         raise exceptions["credentials_exception"]
 
 
-def get_tokens_remaining_expiry(refresh_token_data: RefreshTokenData):
-    access_token_expiry = token_conf["access_token_expiry_seconds"]
-    refresh_token_expiry_epoch = float(refresh_token_data.expiry)
+def get_remaining_tokens_lifetimes(refresh_token_data):
+    access_token_lifetime = jwt_conf["access_token_expiry_seconds"]
+    refresh_token_expiry_epoch = int(refresh_token_data.expiry)
     current_time_epoch = time.time()
-
-    refresh_token_expiry = int(refresh_token_expiry_epoch - current_time_epoch)
-    if refresh_token_expiry < access_token_expiry:
-        logger.info(msg=f"Last token pair rotation. "
-                        f"User: {refresh_token_data.username}; Token family: {refresh_token_data.token_id}")
-        access_token_expiry = refresh_token_expiry
-        return access_token_expiry, refresh_token_expiry
-    return access_token_expiry, refresh_token_expiry
+    refresh_token_lifetime = int(refresh_token_expiry_epoch - current_time_epoch)
+    if refresh_token_lifetime < access_token_lifetime:
+        logger.info(msg=f"Last token ({refresh_token_data.token_id}) rotation for {refresh_token_data.username}")
+        access_token_lifetime = refresh_token_lifetime
+        return access_token_lifetime, refresh_token_lifetime
+    return access_token_lifetime, refresh_token_lifetime
 
 
 def verify_permissions(token_data, granted_scopes):
@@ -148,42 +166,50 @@ def verify_permissions(token_data, granted_scopes):
             logger.error(msg=f"User {token_data.username} has {token_data.scopes} permissions, "
                              f"user needs these permissions: {granted_scopes}")
             raise exceptions["scopes_exception"]
-    return True
 
 
-def compare_passwords(username, plain_password: str, hashed_password: str) -> bool:
+def compare_passwords(username, plain_password: str, hashed_password: str):
     passwords_match = pwd_context.verify(plain_password, hashed_password)
     if not passwords_match:
         logger.error(msg=f"User {username} provided wrong password")
         raise exceptions["login_exception"]
-    return True
 
 
-def create_token_pair(user_data,
-                      access_token_expiry=token_conf["access_token_expiry_seconds"],
-                      refresh_token_expiry=token_conf["refresh_token_expiry_seconds"]):
-    token_constructor = JWTConstructor(user_data)
-    # jti = token_constructor.jwt_id
+def get_hashed_value(payload: str, secret_key: str):
+    encoded_payload = bytes(payload, "utf-8")
+    encoded_secret_key = bytes(secret_key, "utf-8")
+    csrf_hash = hmac.new(key=encoded_secret_key,
+                         msg=encoded_payload,
+                         digestmod=hashlib.sha256)
+    hashed_payload = csrf_hash.hexdigest()
+    return hashed_payload
+
+
+def create_jwt_tokens(session_id, user_data, access_token_expiry, refresh_token_expiry):
+    token_constructor = JWTConstructor(session_id, user_data)
     access_token = token_constructor.construct_access_token(access_token_expiry)
     refresh_token = token_constructor.construct_refresh_token(refresh_token_expiry)
     return access_token, refresh_token
 
 
-@router.post("")
-async def login_for_access(response: Response,
-                           form_urlencoded_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
-    logger.info(msg=f"User {form_urlencoded_data.username} requested a token pair creation")
-    alias = form_urlencoded_data.username
-    password = form_urlencoded_data.password
+@router.post("/create")
+async def login(response: Response, form_urlencoded_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    logger.info(msg=f"{form_urlencoded_data.username} performed login request")
 
-    user_data = mysql_connector.get_user_details(alias)
-    compare_passwords(user_data.username, password, user_data.hashed_password)
+    session_id = secrets.token_hex(16)
+    user_data = mysql_connector.get_user_details(alias=form_urlencoded_data.username)
+    compare_passwords(username=user_data.username,
+                      plain_password=form_urlencoded_data.password,
+                      hashed_password=user_data.hashed_password)
 
-    access_token, refresh_token = create_token_pair(user_data)
-    response.set_cookie(key="access_token", value=f"{access_token}",
-                        httponly=True, secure=False)
-    response.set_cookie(key="refresh_token", value=f"{refresh_token}",
-                        httponly=True, secure=False, path="/token/refresh")
+    access_token, refresh_token = create_jwt_tokens(session_id, user_data,
+                                                    access_token_expiry=jwt_conf["access_token_expiry_seconds"],
+                                                    refresh_token_expiry=jwt_conf["refresh_token_expiry_seconds"])
+    csrf_token = construct_csrf_token(session_id)
+    response.set_cookie(key="access_token", value=f"{access_token}", httponly=True, secure=False)
+    response.set_cookie(key="refresh_token", value=f"{refresh_token}", httponly=True, secure=False,
+                        path="/token/refresh")
+    response.set_cookie(key="csrf_token", value=f"{csrf_token}", httponly=False, secure=False)
 
     logger.info(msg=f"Token pair for {user_data.username} was created successfully")
     return {"username": f"{user_data.username}",
@@ -194,16 +220,16 @@ async def login_for_access(response: Response,
 @router.post("/refresh")
 async def refresh_token_pair(response: Response,
                              refresh_token_data: Annotated[RefreshTokenData, Depends(retrieve_refresh_token_data)]):
-    logger.info(msg=f"User {refresh_token_data.username} requested a token pair refresh")
+    logger.info(msg=f"Token auto refresh request for {refresh_token_data.username}")
 
+    session_id = refresh_token_data.session_id
     user_data = mysql_connector.get_user_details(alias=refresh_token_data.username)
-    access_token_expiry, refresh_token_expiry = get_tokens_remaining_expiry(refresh_token_data)
+    access_token_expiry, refresh_token_expiry = get_remaining_tokens_lifetimes(refresh_token_data)
 
-    access_token, refresh_token = create_token_pair(user_data, access_token_expiry, refresh_token_expiry)
-    response.set_cookie(key="access_token", value=f"{access_token}",
-                        httponly=True, secure=False)
-    response.set_cookie(key="refresh_token", value=f"{refresh_token}",
-                        httponly=True, secure=False, path="/token/refresh")
+    access_token, refresh_token = create_jwt_tokens(session_id, user_data, access_token_expiry, refresh_token_expiry)
+    response.set_cookie(key="access_token", value=f"{access_token}", httponly=True, secure=False)
+    response.set_cookie(key="refresh_token", value=f"{refresh_token}", httponly=True, secure=False,
+                        path="/token/refresh")
 
     logger.info(msg=f"Token pair for {refresh_token_data.username} was refreshed successfully")
     return {"username": f"{user_data.username}",

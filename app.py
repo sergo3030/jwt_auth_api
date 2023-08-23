@@ -6,14 +6,14 @@ from fastapi import FastAPI, Security
 
 import utils as utils
 from config import config
-from routers import token
-from routers.token import retrieve_access_token_data
+from routers import auth_token
+from routers.auth_token import retrieve_access_token_data
 from schemas import AccessTokenData
 
 server_conf = config["server"]
 
 app = FastAPI()
-app.include_router(token.router)
+app.include_router(auth_token.router)
 
 logger = utils.initiate_logger(__name__)
 

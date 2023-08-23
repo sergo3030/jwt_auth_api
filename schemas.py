@@ -6,6 +6,7 @@ from pydantic import BaseModel, error_wrappers
 # Token
 class AccessTokenData(BaseModel):
     token_id: str
+    session_id: str
     user_id: str
     username: str
     expiry: str
@@ -15,6 +16,7 @@ class AccessTokenData(BaseModel):
 
 class RefreshTokenData(BaseModel):
     token_id: str
+    session_id: str
     user_id: str
     username: str
     expiry: str

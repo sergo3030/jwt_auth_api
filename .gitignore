@@ -1,2 +1,4 @@
 *.profile
 *log.txt
+__pycache__
+.idea

@@ -1,5 +1,5 @@
 import pymysql
-
+from pymysql.cursors import DictCursor
 import sql_queries as queries
 import utils
 from config import config
@@ -12,12 +12,12 @@ db_config = config["db"]
 
 class RDBConnection:
     def __init__(self):
-        self.connection = pymysql.connect(
-            host=db_config["server"],
-            user=db_config["user"],
-            password=db_config["password"],
-            database=db_config["database"],
-            autocommit=True)
+        self.connection = pymysql.connect(host=db_config["server"],
+                                          user=db_config["user"],
+                                          password=db_config["password"],
+                                          database=db_config["database"],
+                                          autocommit=True,
+                                          cursorclass=DictCursor)
 
     def get_user_details(self, alias: str) -> UserAllData:
         with self.connection.cursor() as cursor:
@@ -26,30 +26,7 @@ class RDBConnection:
             if result == 0:
                 logger.error(msg=f"User {alias} doesn't exist in DB")
                 raise exceptions["login_exception"]
-            results_list = self._get_users_models(cursor)
-            for result in results_list:
-                existing_user = UserAllData(**result)
-                return existing_user
-
-    def _get_users_models(self, cursor) -> list:
-        query_results = cursor.fetchall()
-        column_names = self._get_column_names(columns_description=cursor.description)
-        results_list = self._match_keys_and_values(column_names, query_results)
-        return results_list
-
-    @staticmethod
-    def _get_column_names(columns_description: tuple) -> tuple:
-        columns_names = []
-        for column in columns_description:
-            column_name = column[0]
-            columns_names.append(column_name)
-        column_names = tuple(columns_names)
-        return column_names
-
-    @staticmethod
-    def _match_keys_and_values(column_names: tuple, results: tuple) -> list:
-        users_details = []
-        for result in results:
-            user_details = dict(zip(column_names, result))
-            users_details.append(user_details)
-        return users_details
+            fetched_result = cursor.fetchall()
+            existing_user_data = fetched_result[0]
+            user_data = UserAllData(**dict(existing_user_data))
+            return user_data

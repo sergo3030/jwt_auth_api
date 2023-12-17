@@ -13,7 +13,6 @@ jwt:
     admin: "Super User"
 csrf:
   secret_key: "F62858DCE32A4652A7CB32DDB1C422B00520D539A76D8E1F53E81FD351F21842"
-  exclude_paths: ["/token/create"]
 db:
   server: "db4free.net"
   user: "fiverr_admin"
@@ -22,3 +21,5 @@ db:
   table: "users_dev"
 logs:
   level: "INFO"
+tags:
+  app: "Bonfire"

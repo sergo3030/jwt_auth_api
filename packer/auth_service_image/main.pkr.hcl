@@ -46,7 +46,10 @@ build {
     inline = [
       "sudo yum install git -y",
       "cd /home/ec2-user",
-      "git clone https://${var.git_username}:${var.git_pat}@github.com/sergo3030/jwt_auth_api.git"
+      "git clone https://${var.git_username}:${var.git_pat}@github.com/sergo3030/jwt_auth_api.git",
+      "cd jwt_auth_api/",
+      "git checkout development",
+      "export APP_WORKDIR='pwd'"
     ]
   }
 }

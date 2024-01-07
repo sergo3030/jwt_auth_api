@@ -29,8 +29,8 @@ resource "aws_security_group" "sg_asg_http" {
   name   = "asg-allow-http"
   vpc_id = data.aws_vpc.default.id
   ingress {
-    from_port       = 80
-    to_port         = 80
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.sg_alb_http.id]
   }
@@ -57,8 +57,8 @@ resource "aws_security_group" "sg_alb_http" {
   name   = "alb-allow-http"
   vpc_id = data.aws_vpc.default.id
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -72,8 +72,8 @@ resource "aws_security_group" "sg_alb_http" {
 
 resource "aws_alb_target_group" "auth_instances" {
   name        = "auth-service-alb-tg"
-  port        = 80
-  protocol    = "HTTP"
+  port        = 8080
+  protocol    = "TCP"
   target_type = "instance"
   vpc_id      = data.aws_vpc.default.id
 }
@@ -100,7 +100,7 @@ resource "aws_launch_template" "auth_service" {
       Version      = "latest"
     }
   }
-  user_data = filebaase64("C:\\Users\\user\\Desktop\\jwt_auth_api\\terraform\\user_dta.sh")
+  user_data = filebase64("C:\\Users\\user\\Desktop\\jwt_auth_api\\terraform\\user_data.sh")
 }
 
 resource "aws_autoscaling_group" "auth_service" {
@@ -109,7 +109,7 @@ resource "aws_autoscaling_group" "auth_service" {
   min_size            = 1
   max_size            = 3
   health_check_type   = "ELB"
-  vpc_zone_identifier = toset(data.aws_subnets.example.ids)
+  vpc_zone_identifier = toset(data.aws_subnets.default.ids)
   target_group_arns   = [aws_alb_target_group.auth_instances.arn]
   launch_template {
     id      = aws_launch_template.auth_service.id
@@ -153,8 +153,8 @@ resource "aws_lb" "auth_service" {
 
 resource "aws_lb_listener" "auth_service" {
   load_balancer_arn = aws_lb.auth_service.arn
-  port              = "80"
-  protocol          = "HTTP"
+  port              = "8080"
+  protocol          = "TCP"
   default_action {
     type             = "forward"
     target_group_arn = aws_alb_target_group.auth_instances.arn

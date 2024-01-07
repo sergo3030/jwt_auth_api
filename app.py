@@ -18,6 +18,11 @@ app.include_router(auth_token.router)
 logger = utils.initiate_logger(__name__)
 
 
+@app.get("/")
+async def get_ok():
+    return "ok"
+
+
 @app.get("/api/ok")
 async def health_check(access_token_data: Annotated[AccessTokenData, Security(retrieve_access_token_data,
                                                                               scopes=["view", "edit", "admin"])]):

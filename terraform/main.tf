@@ -29,10 +29,11 @@ resource "aws_security_group" "sg_asg_http" {
   name   = "asg-allow-http"
   vpc_id = data.aws_vpc.default.id
   ingress {
-    from_port       = 80
-    to_port         = 80
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
-    security_groups = [aws_security_group.sg_alb_http.id]
+    # security_groups = [aws_security_group.sg_alb_http.id]
+    cidr_blocks = ["0.0.0.0/0"]
   }
   egress {
     from_port   = 0
@@ -57,8 +58,8 @@ resource "aws_security_group" "sg_alb_http" {
   name   = "alb-allow-http"
   vpc_id = data.aws_vpc.default.id
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -72,7 +73,7 @@ resource "aws_security_group" "sg_alb_http" {
 
 resource "aws_alb_target_group" "auth_instances" {
   name        = "auth-service-alb-tg"
-  port        = 80
+  port        = 8080
   protocol    = "HTTP"
   target_type = "instance"
   vpc_id      = data.aws_vpc.default.id
@@ -153,7 +154,7 @@ resource "aws_lb" "auth_service" {
 
 resource "aws_lb_listener" "auth_service" {
   load_balancer_arn = aws_lb.auth_service.arn
-  port              = "80"
+  port              = "8080"
   protocol          = "HTTP"
   default_action {
     type             = "forward"

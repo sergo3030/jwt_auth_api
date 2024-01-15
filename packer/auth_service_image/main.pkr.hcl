@@ -1,21 +1,5 @@
-variable "app_version" {
-  type        = string
-  description = "Version of the application."
-  default     = "1.0.0"
-}
-
-variable "git_username" {
-  type        = string
-  description = "GitHub username that performs git clone."
-  sensitive   = true
-  default     = "sergo3030"
-}
-
-variable "git_pat" {
-  type        = string
-  description = "Private Access Token of the GitHub user"
-  sensitive   = true
-  default     = "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"
+locals {
+  git_branch = lookup(var.git_branches, var.environment, "development")
 }
 
 data "amazon-ami" "python-linux" {
@@ -34,9 +18,9 @@ source "amazon-ebs" "bonfire_auth" {
   source_ami    = data.amazon-ami.python-linux.id
   ssh_username  = "ec2-user"
   tags = {
-    Deployer = "PackerImageBuilder",
-    App      = "BonfireAuth",
-    Version  = "${var.app_version}"
+    Deployer     = "PackerImageBuilder",
+    App          = "BonfireAuth",
+    Environement = "${var.environment}"
   }
 }
 
@@ -48,8 +32,9 @@ build {
       "cd /home/ec2-user",
       "git clone https://${var.git_username}:${var.git_pat}@github.com/sergo3030/jwt_auth_api.git",
       "cd jwt_auth_api/",
-      "git checkout development",
-      "export APP_WORKDIR='pwd'"
+      "git checkout ${local.git_branch}",
+      "git pull",
+      "pip-3 install -r requirements.txt"
     ]
   }
 }

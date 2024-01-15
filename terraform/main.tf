@@ -1,22 +1,3 @@
-variable "git_branches" {
-  type        = map(string)
-  description = "Mapping between infrastructure evironment and Github repository branches."
-  default = {
-    "development" = "development"
-    "integration" = "integration"
-    "production"  = "main"
-  }
-}
-
-variable "environment" {
-  type        = string
-  description = "Working environement relevant resources are deployed to."
-  validation {
-    condition     = contains(["development", "integration", "production"], var.environment)
-    error_message = "Valid values for var: environment are (development, integration, production)."
-  }
-}
-
 locals {
   git_branch = lookup(var.git_branches, var.environment, "development")
 }
@@ -32,24 +13,12 @@ resource "aws_security_group" "sg_asg_http" {
     from_port       = 8080
     to_port         = 8080
     protocol        = "tcp"
-    # security_groups = [aws_security_group.sg_alb_http.id]
-    cidr_blocks = ["0.0.0.0/0"]
+    security_groups = [aws_security_group.sg_alb_http.id]
   }
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_security_group" "sg_asg_ssh" {
-  name   = "asg-allow-ssh"
-  vpc_id = data.aws_vpc.default.id
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
@@ -86,13 +55,17 @@ data "aws_ami" "bonfire_auth_linux" {
     name   = "name"
     values = ["bonfire_auth_*"]
   }
+  filter {
+    name   = "tag:Environement"
+    values = ["${var.environment}"]
+  }
 }
 
 resource "aws_launch_template" "auth_service" {
   name                   = "auth-service-lt"
   image_id               = data.aws_ami.bonfire_auth_linux.id
   instance_type          = "t2.micro"
-  vpc_security_group_ids = [aws_security_group.sg_asg_http.id, aws_security_group.sg_asg_ssh.id]
+  vpc_security_group_ids = [aws_security_group.sg_asg_http.id]
   tag_specifications {
     resource_type = "instance"
     tags = {
@@ -101,7 +74,7 @@ resource "aws_launch_template" "auth_service" {
       Version      = "latest"
     }
   }
-  user_data = filebase64("C:\\Users\\user\\Desktop\\jwt_auth_api\\terraform\\user_data.sh")
+  user_data = filebase64(".\\user_data.sh")
 }
 
 resource "aws_autoscaling_group" "auth_service" {

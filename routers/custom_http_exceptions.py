@@ -16,5 +16,7 @@ exceptions = {
     "user_exists": HTTPException(status_code=status.HTTP_409_CONFLICT,
                                  detail="User already exists"),
     "user_not_found": HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                    detail="User not found")
+                                    detail="User not found"),
+    "csrf_token": HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Invalid CSRF-token")
 }

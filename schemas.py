@@ -1,19 +1,24 @@
 import datetime
-from pydantic import BaseModel
+
+from pydantic import BaseModel, error_wrappers
 
 
 # Token
 class AccessTokenData(BaseModel):
     token_id: str
+    session_id: str
     user_id: str
-    alias: str
+    username: str
+    expiry: str
+    timestamp: str
     scopes: list[str] = []
 
 
 class RefreshTokenData(BaseModel):
     token_id: str
+    session_id: str
     user_id: str
-    alias: str
+    username: str
     expiry: str
 
 
